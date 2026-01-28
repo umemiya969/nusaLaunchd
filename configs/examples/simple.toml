@@ -1,0 +1,10 @@
+label = "simple-echo"
+description = "A simple echo service"
+
+[program]
+path = "/usr/bin/echo"
+arguments = ["Hello from NusaLaunchd!"]
+
+[supervision]
+keep_alive = false
+restart_policy = "never"
