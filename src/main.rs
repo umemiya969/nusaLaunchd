@@ -4,216 +4,298 @@ use tracing::{info, error, warn};
 use tracing_subscriber;
 
 mod job;
+mod process;
+mod event;
+mod cli;
 mod util;
 
-use job::{JobManager, JobEvent};
-use util::error::{Result, NusaError};
+use job::JobManager;
+use util::error::Result;
+use cli::{CliArgs, Commands};
 
-#[derive(Parser, Debug)]
-#[command(author, version, about, long_about = None)]
-struct Args {
-    /// Directory containing job configuration files
-    #[arg(short, long, default_value = "/etc/nusalaunchd/jobs")]
-    config_dir: PathBuf,
+#[tokio::main]
+async fn main() -> Result<()> {
+    // Parse command line arguments
+    let args = CliArgs::parse();
     
-    /// Log level (trace, debug, info, warn, error)
-    #[arg(short, long, default_value = "info")]
-    log_level: String,
+    // Initialize logging
+    init_logging(&args.log_level.to_string());
     
-    /// Run in foreground (don't daemonize)
-    #[arg(short, long)]
-    foreground: bool,
+    info!("Starting NusaLaunchd v{}", env!("CARGO_PKG_VERSION"));
     
-    /// Configuration file to load
-    #[arg(short = 'f', long)]
-    config_file: Option<PathBuf>,
+    match args.command {
+        Some(Commands::Daemon { daemon_opts }) => {
+            run_daemon(&args, daemon_opts).await
+        }
+        Some(Commands::Job { job_command }) => {
+            handle_job_command(job_command, &args).await
+        }
+        Some(Commands::Validate { path, strict }) => {
+            validate_config(path, strict).await
+        }
+        Some(Commands::Status { detailed, watch, format }) => {
+            show_status(detailed, watch, format).await
+        }
+        Some(Commands::Example { example_type, output }) => {
+            generate_example(example_type, output).await
+        }
+        Some(Commands::Socket { socket_command }) => {
+            handle_socket_command(socket_command).await
+        }
+        None => {
+            // Default command: run as daemon
+            info!("No command specified, running as daemon");
+            run_daemon(&args, cli::args::DaemonOptions::default()).await
+        }
+    }
 }
 
-struct NusaLaunchd {
-    job_manager: JobManager,
-    event_rx: tokio::sync::mpsc::Receiver<JobEvent>,
+async fn run_daemon(args: &CliArgs, _daemon_opts: cli::args::DaemonOptions) -> Result<()> {
+    info!("Starting NusaLaunchd daemon");
+    
+    // Create job manager
+    let (job_manager, event_rx) = JobManager::new().await?;
+    
+    // Start event processor
+    let event_handle = tokio::spawn(event::EventDispatcher::process_events(event_rx));
+    
+    // Load jobs from config directory
+    load_jobs_from_directory(&job_manager, &args.config_dir).await?;
+    
+    if args.dry_run {
+        info!("Dry run mode - not starting jobs");
+        show_daemon_status(&job_manager).await;
+        return Ok(());
+    }
+    
+    if args.foreground {
+        info!("Running in foreground mode");
+        
+        // Start signal handlers
+        setup_signal_handlers(job_manager.clone()).await?;
+        
+        // Keep daemon running
+        tokio::select! {
+            _ = event_handle => {
+                warn!("Event processor stopped");
+            }
+            _ = tokio::signal::ctrl_c() => {
+                info!("Received Ctrl+C, shutting down");
+            }
+        }
+    } else {
+        info!("Daemon mode - use control tool to manage jobs");
+        // TODO: Implement daemonization
+    }
+    
+    Ok(())
 }
 
-impl NusaLaunchd {
-    fn new() -> Self {
-        let (job_manager, event_rx) = JobManager::new();
-        Self {
-            job_manager,
-            event_rx,
+async fn load_jobs_from_directory(job_manager: &JobManager, config_dir: &PathBuf) -> Result<()> {
+    info!("Loading jobs from: {}", config_dir.display());
+    
+    if !config_dir.exists() {
+        warn!("Config directory does not exist: {}", config_dir.display());
+        return Ok(());
+    }
+    
+    let mut loaded = 0;
+    let mut failed = 0;
+    
+    match std::fs::read_dir(config_dir) {
+        Ok(entries) => {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                
+                if path.extension().and_then(|s| s.to_str()) == Some("toml") {
+                    match job::config::JobConfig::from_file(&path).await {
+                        Ok(config) => {
+                            if let Err(e) = job_manager.load_job(config).await {
+                                error!("Failed to load job from {}: {}", path.display(), e);
+                                failed += 1;
+                            } else {
+                                loaded += 1;
+                            }
+                        }
+                        Err(e) => {
+                            error!("Failed to parse config file {}: {}", path.display(), e);
+                            failed += 1;
+                        }
+                    }
+                }
+            }
+        }
+        Err(e) => {
+            error!("Failed to read config directory: {}", e);
         }
     }
     
-    /// Load all job configurations from a directory
-    async fn load_jobs_from_dir(&self, dir: &PathBuf) -> Result<()> {
-        info!("Loading jobs from directory: {}", dir.display());
+    info!("Loaded {} jobs ({} failed)", loaded, failed);
+    Ok(())
+}
+
+async fn show_daemon_status(job_manager: &JobManager) {
+    let jobs = job_manager.list_jobs().await;
+    
+    println!("NusaLaunchd Daemon Status");
+    println!("=========================");
+    println!("Total jobs: {}", jobs.len());
+    
+    for job in jobs {
+        let state_str = match job.state {
+            job::JobState::Running => "✓".to_string(),
+            job::JobState::Stopped => "✗".to_string(),
+            job::JobState::Failed(ref reason) => format!("⚠ ({})", reason),
+            _ => "?".to_string(),
+        };
         
-        if !dir.exists() {
-            warn!("Config directory does not exist: {}", dir.display());
-            return Ok(());
+        println!("  {} {} [{}]", state_str, job.label, job.state);
+    }
+}
+
+async fn handle_job_command(
+    job_command: cli::args::JobCommands,
+    _args: &CliArgs,
+) -> Result<()> {
+    match job_command {
+        cli::args::JobCommands::Start { labels, wait, timeout } => {
+            info!("Starting jobs: {:?}", labels);
+            // TODO: Implement job starting
+            Ok(())
         }
+        _ => {
+            warn!("Job command not fully implemented yet");
+            Ok(())
+        }
+    }
+}
+
+async fn validate_config(path: PathBuf, strict: bool) -> Result<()> {
+    info!("Validating config: {}", path.display());
+    
+    if path.is_dir() {
+        // Validate all .toml files in directory
+        let mut valid = 0;
+        let mut invalid = 0;
         
-        let mut loaded = 0;
-        let mut failed = 0;
-        
-        // Read all .toml files in the directory
-        match std::fs::read_dir(dir) {
+        match std::fs::read_dir(&path) {
             Ok(entries) => {
                 for entry in entries.flatten() {
-                    let path = entry.path();
-                    
-                    // Only process .toml files
-                    if path.extension().and_then(|s| s.to_str()) == Some("toml") {
-                        match job::config::JobConfig::from_file(&path) {
+                    let file_path = entry.path();
+                    if file_path.extension().and_then(|s| s.to_str()) == Some("toml") {
+                        match job::config::JobConfig::from_file(&file_path).await {
                             Ok(config) => {
-                                if let Err(e) = self.job_manager.load_job(config).await {
-                                    error!("Failed to load job from {}: {}", path.display(), e);
-                                    failed += 1;
-                                } else {
-                                    loaded += 1;
-                                }
+                                println!("✓ {}: {}", file_path.display(), config.label);
+                                valid += 1;
                             }
                             Err(e) => {
-                                error!("Failed to parse config file {}: {}", path.display(), e);
-                                failed += 1;
+                                println!("✗ {}: {}", file_path.display(), e);
+                                invalid += 1;
                             }
                         }
                     }
                 }
             }
             Err(e) => {
-                return Err(NusaError::System(
-                    format!("Failed to read config directory: {}", e)
-                ));
+                error!("Failed to read directory: {}", e);
+                return Err(util::error::NusaError::System(e.to_string()));
             }
         }
         
-        info!("Loaded {} jobs ({} failed)", loaded, failed);
-        Ok(())
-    }
-    
-    /// Load a single job configuration file
-    async fn load_job_from_file(&self, file: &PathBuf) -> Result<()> {
-        info!("Loading job from file: {}", file.display());
-        
-        let config = job::config::JobConfig::from_file(file)?;
-        self.job_manager.load_job(config).await?;
-        
-        Ok(())
-    }
-    
-    /// Main event loop
-    async fn run_event_loop(mut self) -> Result<()> {
-        info!("Starting NusaLaunchd event loop");
-        
-        // Simple event loop for now
-        while let Some(event) = self.event_rx.recv().await {
-            self.handle_event(event).await?;
+        println!("\nValidation complete: {} valid, {} invalid", valid, invalid);
+        if strict && invalid > 0 {
+            return Err(util::error::NusaError::System("Strict validation failed".into()));
         }
-        
-        Ok(())
-    }
-    
-    /// Handle job events
-    async fn handle_event(&self, event: JobEvent) -> Result<()> {
-        match event {
-            JobEvent::JobLoaded(label) => {
-                info!("Job loaded: {}", label);
+    } else {
+        // Validate single file
+        match job::config::JobConfig::from_file(&path).await {
+            Ok(config) => {
+                println!("✓ Configuration is valid");
+                println!("  Label: {}", config.label);
+                println!("  Program: {}", config.program.path.display());
+                println!("  Supervision: keep_alive={}", config.supervision.keep_alive);
             }
-            JobEvent::JobStarted(label, pid) => {
-                info!("Job started: {} [PID: {}]", label, pid);
-            }
-            JobEvent::JobStopped(label) => {
-                info!("Job stopped: {}", label);
-            }
-            JobEvent::JobExited(label, code, signal) => {
-                if let Some(sig) = signal {
-                    warn!("Job exited: {} [signal: {}]", label, sig);
-                } else {
-                    info!("Job exited: {} [code: {}]", label, code);
+            Err(e) => {
+                println!("✗ Configuration is invalid: {}", e);
+                if strict {
+                    return Err(e);
                 }
             }
-            JobEvent::JobFailed(label, reason) => {
-                error!("Job failed: {} [reason: {}]", label, reason);
-            }
-            JobEvent::JobRestartNeeded(label) => {
-                warn!("Job needs restart: {}", label);
-                // TODO: Implement restart logic with delays and limits
-            }
         }
-        
-        Ok(())
     }
     
-    /// Print current status of all jobs
-    async fn print_status(&self) {
-        let jobs = self.job_manager.list_jobs().await;
-        
-        println!("NusaLaunchd Status");
-        println!("==================");
-        println!("{:<20} {:<12} {:<8} {:<10}", "LABEL", "STATE", "PID", "UPTIME");
-        println!("{:-<20} {:-<12} {:-<8} {:-<10}", "", "", "", "");
-        
-        for job in jobs {
-            let pid_str = match job.pid {
-                Some(pid) => pid.to_string(),
-                None => "-".to_string(),
-            };
-            
-            let uptime_str = match job.uptime {
-                Some(duration) => {
-                    let secs = duration.as_secs();
-                    if secs < 60 {
-                        format!("{}s", secs)
-                    } else if secs < 3600 {
-                        format!("{}m", secs / 60)
-                    } else {
-                        format!("{}h", secs / 3600)
-                    }
-                }
-                None => "-".to_string(),
-            };
-            
-            println!("{:<20} {:<12} {:<8} {:<10}", 
-                job.label, 
-                job.state.to_string(),
-                pid_str,
-                uptime_str
-            );
-        }
-    }
+    Ok(())
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
-    // Parse command line arguments
-    let args = Args::parse();
+async fn show_status(_detailed: bool, _watch: bool, _format: cli::args::OutputFormat) -> Result<()> {
+    // TODO: Implement status display
+    println!("Status command not fully implemented yet");
+    Ok(())
+}
+
+async fn generate_example(
+    example_type: cli::args::ExampleType,
+    output: Option<PathBuf>,
+) -> Result<()> {
+    let example = match example_type {
+        cli::args::ExampleType::Simple => {
+            include_str!("../configs/examples/simple.toml")
+        }
+        cli::args::ExampleType::WebServer => {
+            include_str!("../configs/examples/web_server.toml")
+        }
+        cli::args::ExampleType::Database => {
+            "# Database service example\nlabel = \"database\"\n\n[program]\npath = \"/usr/bin/postgres\"\n"
+        }
+        cli::args::ExampleType::Cron => {
+            "# Cron-like service example\nlabel = \"cron-job\"\n\n[program]\npath = \"/usr/bin/bash\"\narguments = [\"-c\", \"echo 'Hello from cron'\"]\n"
+        }
+        cli::args::ExampleType::Socket => {
+            "# Socket-activated service example\nlabel = \"socket-service\"\n\n[program]\npath = \"/usr/bin/echo\"\n# Socket configuration will be added in Week 3\n"
+        }
+    };
     
-    // Initialize logging
-    init_logging(&args.log_level);
-    
-    info!("Starting NusaLaunchd v{}", env!("CARGO_PKG_VERSION"));
-    
-    // Create application instance
-    let app = NusaLaunchd::new();
-    
-    // Load configurations
-    if let Some(config_file) = &args.config_file {
-        app.load_job_from_file(config_file).await?;
+    if let Some(output_path) = output {
+        std::fs::write(&output_path, example)
+            .map_err(|e| util::error::NusaError::System(format!("Failed to write file: {}", e)))?;
+        println!("Example written to: {}", output_path.display());
     } else {
-        app.load_jobs_from_dir(&args.config_dir).await?;
+        println!("{}", example);
     }
     
-    // Print initial status
-    app.print_status().await;
+    Ok(())
+}
+
+async fn handle_socket_command(
+    _socket_command: cli::args::SocketCommands,
+) -> Result<()> {
+    // TODO: Implement socket commands (Week 3)
+    println!("Socket commands will be implemented in Week 3");
+    Ok(())
+}
+
+async fn setup_signal_handlers(job_manager: job::JobManager) -> Result<()> {
+    use signal_hook::consts::{SIGTERM, SIGINT};
+    use signal_hook_tokio::Signals;
     
-    // Run event loop if in foreground mode
-    if args.foreground {
-        info!("Running in foreground mode");
-        app.run_event_loop().await?;
-    } else {
-        info!("Run with --foreground to start the event loop");
-        info!("Use control tool to manage jobs (coming soon)");
-    }
+    let mut signals = Signals::new(&[SIGTERM, SIGINT])
+        .map_err(|e| util::error::NusaError::System(format!("Failed to setup signals: {}", e)))?;
+    
+    let handle = signals.handle();
+    
+    tokio::spawn(async move {
+        while let Some(signal) = signals.next().await {
+            match signal {
+                SIGTERM | SIGINT => {
+                    info!("Received signal {}, shutting down gracefully", signal);
+                    // TODO: Graceful shutdown of all jobs
+                    break;
+                }
+                _ => {}
+            }
+        }
+        handle.close();
+    });
     
     Ok(())
 }
