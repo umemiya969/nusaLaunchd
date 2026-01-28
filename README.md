@@ -1,20 +1,7 @@
-# NusaLaunchd
+# 🚀 NusaLaunchd - A Launchd-style Init System for Linux
 
-A launchd-style init system for Linux written in Rust.
+NusaLaunchd is a modern, lightweight init system for Linux inspired by macOS launchd, built in Rust. It provides socket activation, dependency management, and process supervision with a clean TOML-based configuration format.
 
-## Status: Development (Week 1-2 - Foundation)
-
-**Current Features:**
-- ✅ TOML-based job configuration
-- ✅ Job loading and validation
-- ✅ Basic process spawning
-- ✅ Simple supervision (auto-restart)
-
-**Planned Features:**
-- Socket activation
-- Dependency resolution
-- Cgroups integration
-- Namespace sandboxing
 
 ## Quick Start
 
