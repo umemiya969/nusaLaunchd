@@ -1,0 +1,18 @@
+label = "sleep-service"
+description = "A service that sleeps for demonstration"
+
+[program]
+path = "/usr/bin/sleep"
+arguments = ["300"]  # Sleep for 5 minutes
+
+[supervision]
+keep_alive = true
+restart_policy = "on-failure"
+restart_delay_sec = 2
+max_restarts = 3
+
+[environment]
+key = "TEST_ENV"
+value = "nusalaunchd"
+
+working_directory = "/tmp"
