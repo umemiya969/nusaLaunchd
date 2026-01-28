@@ -1,0 +1,26 @@
+FROM rust:alpine AS builder
+
+# Install dependencies
+RUN apk add --no-cache musl-dev
+
+WORKDIR /app
+COPY . .
+
+# Build
+RUN cargo build --release
+
+FROM alpine:latest
+
+# Create runtime user
+RUN adduser -D nusalaunchd
+
+# Copy binary
+COPY --from=builder /app/target/release/nusalaunchd /usr/local/bin/
+COPY --from=builder /app/configs/examples/ /etc/nusalaunchd/jobs/
+
+# Create necessary directories
+RUN mkdir -p /run/nusalaunchd
+
+USER nusalaunchd
+
+CMD ["nusalaunchd", "--foreground"]
