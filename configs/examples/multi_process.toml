@@ -1,0 +1,28 @@
+# Example: Multi-process service (like a worker pool)
+# This shows how to configure a service that might spawn multiple workers
+
+label = "worker-pool"
+description = "Worker pool with multiple processes"
+
+[program]
+path = "/usr/local/bin/worker"
+arguments = ["--worker-count", "4", "--queue", "jobs"]
+working_directory = "/var/lib/worker"
+
+[supervision]
+keep_alive = true
+restart_policy = "always"  # Always restart if it exits
+restart_delay_sec = 2
+max_restarts = 10  # Allow many restarts for worker processes
+
+[[environment]]
+key = "WORKER_TYPE"
+value = "default"
+
+[[environment]]
+key = "REDIS_URL"
+value = "redis://localhost:6379"
+
+[[environment]]
+key = "LOG_LEVEL"
+value = "info"

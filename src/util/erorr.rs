@@ -35,6 +35,9 @@ pub enum ConfigError {
     
     #[error("Unsupported config format")]
     UnsupportedFormat,
+    
+    #[error("TOML parsing error: {0}")]
+    Toml(#[from] toml::de::Error),
 }
 
 #[derive(Error, Debug)]
@@ -50,6 +53,15 @@ pub enum ProcessError {
     
     #[error("Process timeout")]
     Timeout,
+    
+    #[error("Process error: {0}")]
+    Other(String),
+}
+
+impl From<String> for ProcessError {
+    fn from(s: String) -> Self {
+        ProcessError::Other(s)
+    }
 }
 
 pub type Result<T> = std::result::Result<T, NusaError>;

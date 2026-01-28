@@ -1,3 +1,6 @@
+# Long-running service example
+# Save as /etc/nusalaunchd/jobs/sleep-service.toml
+
 label = "sleep-service"
 description = "A service that sleeps for demonstration"
 
@@ -11,7 +14,7 @@ restart_policy = "on-failure"
 restart_delay_sec = 2
 max_restarts = 3
 
-[environment]
+[[environment]]
 key = "TEST_ENV"
 value = "nusalaunchd"
 

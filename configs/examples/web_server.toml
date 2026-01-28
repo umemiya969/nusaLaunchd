@@ -1,0 +1,24 @@
+# Example: Nginx web server configuration
+# Save as /etc/nusalaunchd/jobs/nginx.toml
+
+label = "nginx"
+description = "Nginx HTTP/HTTPS web server"
+
+[program]
+path = "/usr/sbin/nginx"
+arguments = ["-g", "daemon off;"]
+working_directory = "/var/www/html"
+
+[supervision]
+keep_alive = true
+restart_policy = "on-failure"
+restart_delay_sec = 3
+max_restarts = 5
+
+[[environment]]
+key = "NGINX_ENV"
+value = "production"
+
+[[environment]]
+key = "NGINX_ENTRYPOINT"
+value = "/docker-entrypoint.sh"

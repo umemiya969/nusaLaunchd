@@ -1,5 +1,8 @@
+# Simple echo service example
+# Save as /etc/nusalaunchd/jobs/simple-echo.toml
+
 label = "simple-echo"
-description = "A simple echo service"
+description = "A simple echo service for testing"
 
 [program]
 path = "/usr/bin/echo"

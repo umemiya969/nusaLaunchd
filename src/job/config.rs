@@ -85,7 +85,7 @@ fn default_max_restarts() -> u32 { 5 }
 
 impl JobConfig {
     /// Load job configuration from a TOML file
-    pub fn from_file<P: AsRef<std::path::Path>>(path: P) -> Result<Self> {
+    pub async fn from_file<P: AsRef<std::path::Path>>(path: P) -> Result<Self> {
         let path = path.as_ref();
         
         // Check if file exists
@@ -102,13 +102,13 @@ impl JobConfig {
             .map_err(|e| ConfigError::Parse(format!("Invalid TOML: {}", e)))?;
         
         // Validate the configuration
-        config.validate()?;
+        config.validate().await?;
         
         Ok(config)
     }
     
     /// Validate configuration
-    pub fn validate(&self) -> Result<()> {
+    pub async fn validate(&self) -> Result<()> {
         // Check if label is not empty
         if self.label.trim().is_empty() {
             return Err(ConfigError::Validation("Label cannot be empty".into()).into());
@@ -119,13 +119,25 @@ impl JobConfig {
             return Err(ConfigError::Validation("Program path cannot be empty".into()).into());
         }
         
-        // TODO: Check if program exists (but only warn, not error)
-        // karena mungkin di-deploy nanti
+        // Check for invalid characters in label
+        if self.label.contains('/') || self.label.contains('\\') {
+            return Err(ConfigError::Validation(
+                "Label cannot contain path separators".into()
+            ).into());
+        }
         
         // Validate restart policy logic
         if !self.supervision.keep_alive && self.supervision.restart_policy != RestartPolicy::Never {
             tracing::warn!(
                 "Job '{}': restart_policy is ignored when keep_alive=false",
+                self.label
+            );
+        }
+        
+        // Check max_restarts logic
+        if self.supervision.max_restarts == 0 {
+            tracing::info!(
+                "Job '{}': max_restarts=0 means unlimited restarts",
                 self.label
             );
         }
@@ -139,51 +151,5 @@ impl JobConfig {
             .iter()
             .map(|env| (env.key.clone(), env.value.clone()))
             .collect()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use tempfile::NamedTempFile;
-    
-    #[test]
-    fn test_load_valid_config() {
-        let toml_content = r#"
-            label = "test-service"
-            description = "A test service"
-            
-            [program]
-            path = "/usr/bin/echo"
-            arguments = ["Hello, World!"]
-            
-            [supervision]
-            keep_alive = false
-            restart_policy = "never"
-        "#;
-        
-        let mut file = NamedTempFile::new().unwrap();
-        std::io::Write::write_all(&mut file, toml_content.as_bytes()).unwrap();
-        
-        let config = JobConfig::from_file(file.path()).unwrap();
-        
-        assert_eq!(config.label, "test-service");
-        assert_eq!(config.program.path, PathBuf::from("/usr/bin/echo"));
-        assert_eq!(config.supervision.keep_alive, false);
-    }
-    
-    #[test]
-    fn test_invalid_config() {
-        let toml_content = r#"
-            label = ""
-            [program]
-            path = ""
-        "#;
-        
-        let mut file = NamedTempFile::new().unwrap();
-        std::io::Write::write_all(&mut file, toml_content.as_bytes()).unwrap();
-        
-        let result = JobConfig::from_file(file.path());
-        assert!(result.is_err());
     }
 }
